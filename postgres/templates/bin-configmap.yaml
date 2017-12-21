@@ -1,3 +1,4 @@
+{{- $envAll := . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,3 +8,39 @@ metadata:
     type: configuration
     component: database
 data:
+{{- if .Values.users }}
+  "10-config.sh": |
+    #!/usr/bin/env bash
+    [[ -d $PGDATA ]] || mkdir -p $PGDATA
+
+    cp /postgresql-conf/postgresql.conf $PGDATA/postgresql.conf
+    cp /postgresql-conf/pg-hba.conf $PGDATA/pg_hba.conf
+  "20-users.sql": |
+    CREATE FUNCTION pg_temp.upsert_user(uname TEXT, pass TEXT) returns void AS $$
+    BEGIN
+        EXECUTE 'CREATE USER ' || uname || ' WITH ENCRYPTED PASSWORD ''' || pass || '''';
+    EXCEPTION
+    WHEN duplicate_object THEN
+        EXECUTE 'ALTER ROLE ' || uname || ' WITH ENCRYPTED PASSWORD ''' || pass || '''';
+    END$$ LANGUAGE plpgsql;
+{{- range $user, $values := .Values.users }}
+    SELECT pg_temp.upsert_user('{{$user}}{{$envAll.Values.global.user_suffix}}', '{{$values.password | default (tuple $envAll $user | include "postgres.password_for_user")}}');
+{{- end }}
+  "30-databases.sql": |
+    CREATE FUNCTION pg_temp.upsert_database(dbname TEXT, uname TEXT) returns void AS $$
+    BEGIN
+        EXECUTE 'CREATE DATABASE ' || dbname || ' WITH OWNER ' || uname;
+    EXCEPTION
+    WHEN duplicate_object THEN
+        EXECUTE 'ALTER DATABASE ' || dbname || ' OWNER TO ' || uname;
+        EXECUTE 'GRANT ALL ON ' || dbname || ' TO ' || uname;
+    END$$ LANGUAGE plpgsql;
+
+{{- range $user, $values := .Values.users }}
+    SELECT pg_temp.upsert_database('{{$user}}', '{{$user}}{{$envAll.Values.global.user_suffix}}');
+{{- end }}
+{{- end }}
+{{- range $key, $value := $envAll.Values.scripts }}
+  {{$key | quote }}: |
+{{ indent 4 $value }}
+{{- end }}
